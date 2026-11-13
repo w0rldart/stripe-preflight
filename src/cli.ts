@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,8 +26,8 @@ Exit codes: 0 all passed, 1 a check failed, 2 the run could not start.`;
 
 const CONFIG_FILES = ["ts", "mts", "mjs", "js", "json"].map((ext) => `stripe-preflight.config.${ext}`);
 
-async function loadConfig(path: string | undefined): Promise<Config> {
-  const file = path ? resolve(path) : CONFIG_FILES.map((name) => resolve(name)).find((f) => existsSync(f));
+async function loadConfig(path: string | undefined, cwd: string): Promise<Config> {
+  const file = path ? resolve(cwd, path) : CONFIG_FILES.map((name) => resolve(cwd, name)).find((f) => existsSync(f));
   if (!file) throw new Error("No config found. Create stripe-preflight.config.ts or pass --config.");
   if (!existsSync(file)) throw new Error(`Config not found: ${file}`);
   if (file.endsWith(".json")) return JSON.parse(readFileSync(file, "utf8"));
@@ -36,19 +35,40 @@ async function loadConfig(path: string | undefined): Promise<Config> {
   return mod.default;
 }
 
-function readKey(envFile: string | undefined, name: string): string {
+function readKey(envFile: string | undefined, name: string, env: NodeJS.ProcessEnv, cwd: string): string {
   if (envFile) {
     // Read the file directly, so a key exported in the shell cannot override it.
-    const key = parseEnv(readFileSync(envFile, "utf8"))[name];
+    const key = parseEnv(readFileSync(resolve(cwd, envFile), "utf8"))[name];
     if (!key) throw new Error(`${envFile} has no ${name}.`);
     return key;
   }
-  const key = process.env[name];
+  const key = env[name];
   if (!key) throw new Error(`Set ${name}, or pass --env-file.`);
   return key;
 }
 
-async function main(args: string[]): Promise<number> {
+/** What the CLI reads and writes. Tests pass their own; the command uses the process. */
+export type Io = {
+  fetch?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  out?: (text: string) => void;
+  err?: (text: string) => void;
+};
+
+/** Runs the CLI and returns its exit code. */
+export async function main(args: string[], io: Io = {}): Promise<number> {
+  try {
+    return await run(args, io);
+  } catch (err) {
+    (io.err ?? console.error)(`stripe-preflight: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+}
+
+async function run(args: string[], io: Io): Promise<number> {
+  const out = io.out ?? console.log;
+  const cwd = io.cwd ?? process.cwd();
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -64,7 +84,7 @@ async function main(args: string[]): Promise<number> {
     },
   });
   if (values.help || values.version) {
-    console.log(values.help ? HELP : version);
+    out(values.help ? HELP : version);
     return 0;
   }
 
@@ -76,23 +96,14 @@ async function main(args: string[]): Promise<number> {
     throw new Error("--expect takes test or live.");
   }
 
-  const config = await loadConfig(values.config);
+  const config = await loadConfig(values.config, cwd);
   const report = await preflight(config, {
-    key: readKey(values["env-file"], values["key-var"]),
+    key: readKey(values["env-file"], values["key-var"], io.env ?? process.env, cwd),
     apply: command === "apply",
     confirmLive: values["confirm-live"],
     expect: values.expect as Mode | undefined,
+    fetch: io.fetch,
   });
-  console.log(values.json ? JSON.stringify(report, null, 2) : formatText(report));
+  out(values.json ? JSON.stringify(report, null, 2) : formatText(report));
   return report.ok ? 0 : 1;
 }
-
-main(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (err: unknown) => {
-    console.error(`stripe-preflight: ${err instanceof Error ? err.message : String(err)}`);
-    process.exitCode = 2;
-  },
-);

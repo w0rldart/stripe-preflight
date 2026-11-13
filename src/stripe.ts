@@ -1,4 +1,6 @@
 // A small Stripe REST client: form-encoded requests, JSON answers, no SDK.
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /** The API version every request is sent with, so answers keep the shape this code reads. */
 export const API_VERSION = "2026-10-28.endive";
@@ -52,22 +54,65 @@ export function encode(params: Params): string {
 
 export type Client = ReturnType<typeof createClient>;
 
-export function createClient(key: string, fetchImpl: typeof fetch = fetch) {
-  /** One request. Never throws on a Stripe error; the caller reads the status. */
+export type ClientOptions = {
+  fetch?: typeof fetch;
+  /** Wait before each retry, in milliseconds. One entry per retry. */
+  retryDelays?: number[];
+  /** Give up on a request after this many milliseconds. */
+  timeoutMs?: number;
+};
+
+export function createClient(key: string, options: ClientOptions = {}) {
+  const fetchImpl = options.fetch ?? fetch;
+  const delays = options.retryDelays ?? [500, 2000];
+  const timeoutMs = options.timeoutMs ?? 30_000;
+
+  /**
+   * One request, retried on network errors, 429 and 5xx, as Stripe advises.
+   * Never throws on a Stripe error; the caller reads the status.
+   */
   async function request(method: "GET" | "POST", path: string, params: Params = {}): Promise<StripeAnswer> {
     const query = method === "GET" && Object.keys(params).length ? `?${encode(params)}` : "";
-    const res = await fetchImpl(`https://api.stripe.com${path}${query}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${key}`,
-        "stripe-version": API_VERSION,
-        ...(method === "POST" && { "content-type": "application/x-www-form-urlencoded" }),
-      },
-      body: method === "POST" ? encode(params) : undefined,
-    }).catch((err: Error) => {
-      throw new NetworkError(`Could not reach api.stripe.com: ${(err.cause as Error | undefined)?.message ?? err.message}`);
-    });
-    return { status: res.status, body: await res.json().catch(() => ({})) };
+    // The same key on every attempt, so a retried POST cannot create anything twice.
+    const idempotencyKey = method === "POST" ? randomUUID() : undefined;
+    for (let attempt = 0; ; attempt++) {
+      const last = attempt >= delays.length;
+      let res: Response;
+      try {
+        res = await fetchImpl(`https://api.stripe.com${path}${query}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${key}`,
+            "stripe-version": API_VERSION,
+            ...(idempotencyKey && {
+              "content-type": "application/x-www-form-urlencoded",
+              "idempotency-key": idempotencyKey,
+            }),
+          },
+          body: method === "POST" ? encode(params) : undefined,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        if (!last) {
+          await sleep(delays[attempt]);
+          continue;
+        }
+        const e = err as Error;
+        const why =
+          e.name === "TimeoutError"
+            ? `no answer within ${timeoutMs / 1000} s`
+            : ((e.cause as Error | undefined)?.message ?? e.message);
+        throw new NetworkError(`Could not reach api.stripe.com: ${why}`);
+      }
+      const advice = res.headers.get("stripe-should-retry");
+      const retry = advice === "true" || (advice !== "false" && (res.status === 429 || res.status >= 500));
+      if (retry && !last) {
+        await res.body?.cancel();
+        await sleep(delays[attempt]);
+        continue;
+      }
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    }
   }
 
   /** Like request, but throws StripeApiError unless Stripe answered 2xx. */

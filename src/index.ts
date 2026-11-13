@@ -64,7 +64,7 @@ export async function preflight(config: Config, options: Options): Promise<Repor
     throw new Error("Refusing to change a live account without --confirm-live.");
   }
   const ctx: Context = {
-    client: createClient(options.key.trim(), options.fetch),
+    client: createClient(options.key.trim(), { fetch: options.fetch }),
     key,
     apply: Boolean(options.apply),
     now: options.now ?? Date.now,
