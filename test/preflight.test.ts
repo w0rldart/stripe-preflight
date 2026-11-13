@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatText, preflight, type Config, type Report } from "../src/index.ts";
+import { formatText, preflight, type Config, type ProductSpec, type Report } from "../src/index.ts";
 import { encode } from "../src/stripe.ts";
 
 type Request = { method: string; path: string; query: URLSearchParams; body: URLSearchParams };
@@ -141,12 +141,33 @@ test("webhook: missing and extra events, fixed by apply", async () => {
   assert.equal(checked?.status, "fail");
   assert.match(checked!.message, /missing checkout.session.async_payment_succeeded/);
   assert.deepEqual(checked!.details, ["also sends charge.refunded"]);
+  assert.equal(checked!.fix, "Run apply to add the missing events.");
 
   const [applied] = results(await run(config, stripe, "sk_test_x", { apply: true }), "webhook");
   assert.equal(applied?.status, "pass");
   const update = stripe.calls.find((c) => c.method === "POST")!;
   assert.deepEqual([update.body.get("enabled_events[0]"), update.body.get("enabled_events[1]")], EVENTS);
   assert.equal(update.body.get("disabled"), "false");
+});
+
+test("webhook: a disabled endpoint fails and apply enables it, keeping its signing secret", async () => {
+  const endpoint = { id: "we_1", url: URL_, status: "disabled", enabled_events: EVENTS, api_version: null };
+  const stripe = fakeStripe(
+    on("GET", "/v1/webhook_endpoints", 200, list([endpoint])),
+    on("POST", "/v1/webhook_endpoints/we_1", 200, { ...endpoint, status: "enabled" }),
+  );
+  const config: Config = { webhooks: [{ url: URL_, events: EVENTS }] };
+  const [checked] = results(await run(config, stripe), "webhook");
+  assert.equal(checked?.status, "fail");
+  assert.match(checked!.message, /we_1, disabled$/);
+  assert.equal(checked!.fix, "Run apply to enable it.");
+
+  const report = await run(config, stripe, "sk_test_x", { apply: true });
+  const [applied] = results(report, "webhook");
+  assert.equal(applied?.status, "pass");
+  assert.match(applied!.message, /we_1, updated/);
+  assert.deepEqual(report.secrets, []);
+  assert.equal(stripe.calls.filter((c) => c.path === "/v1/webhook_endpoints" && c.method === "POST").length, 0);
 });
 
 test("webhook: a wrong API version fails and apply does not delete anything", async () => {
@@ -267,6 +288,7 @@ test("formats the report for a terminal", () => {
     key: { type: "rk_live", mode: "live", restricted: true },
     applied: false,
     secrets: [],
+    ids: { products: {}, prices: { STRIPE_PRICE_SOLO: "price_1" }, webhooks: {} },
     ok: false,
     results: [
       { area: "deliveries", status: "pass", message: "no failed deliveries in the last 3 days" },
@@ -286,7 +308,171 @@ test("formats the report for a terminal", () => {
       "TODO  dashboard    Customer emails: turn on Refunds",
       "                   https://x.example",
       "",
+      "Price IDs:",
+      "  STRIPE_PRICE_SOLO=price_1",
+      "",
       "1 failed, 1 to confirm in the Dashboard.",
     ].join("\n"),
   );
+});
+
+// Catalog
+
+const SOLO: ProductSpec = {
+  key: "solo",
+  name: "Shop Solo",
+  description: "For one person",
+  metadata: { catalog_version: "6" },
+  prices: [
+    { name: "PRICE_SOLO_EUR", currency: "eur", unitAmount: 3300, interval: "month", metadata: { price_key: "monthly" } },
+    { name: "PRICE_SOLO_EUR_ANNUAL", currency: "eur", unitAmount: 31700, interval: "year" },
+  ],
+};
+const catalogConfig = (products = [SOLO]): Config => ({ catalog: { keyField: "tier", products }, deliveries: false });
+const product = { id: "prod_1", name: "Shop Solo", description: "For one person", metadata: { tier: "solo", catalog_version: "6" } };
+const price = (id: string, unit_amount: number, interval: string | null, currency = "eur") => ({
+  id,
+  currency,
+  unit_amount,
+  recurring: interval ? { interval } : null,
+});
+const prices = (...data: unknown[]) => (req: Request) =>
+  req.method === "GET" && req.path === "/v1/prices" && req.query.get("product") === "prod_1" ? ([200, list(data)] as [number, unknown]) : undefined;
+
+test("catalog: a missing product fails on check and is created with its prices on apply", async () => {
+  let n = 0;
+  const stripe = fakeStripe(
+    on("GET", "/v1/products", 200, list([{ id: "prod_other", metadata: { tier: "team" } }])),
+    on("POST", "/v1/products", 200, { ...product, id: "prod_new" }),
+    (req) => (req.method === "POST" && req.path === "/v1/prices" ? [200, { id: `price_${++n}` }] : undefined),
+  );
+  const [checked] = results(await run(catalogConfig(), stripe), "catalog");
+  assert.equal(checked?.status, "fail");
+  assert.deepEqual(checked?.details, ["missing PRICE_SOLO_EUR: EUR 33.00 per month", "missing PRICE_SOLO_EUR_ANNUAL: EUR 317.00 per year"]);
+  assert.equal(stripe.calls.filter((c) => c.method === "POST").length, 0);
+
+  const report = await run(catalogConfig(), stripe, "sk_test_x", { apply: true });
+  const [applied] = results(report, "catalog");
+  assert.equal(applied?.status, "pass");
+  assert.equal(applied?.message, "solo (prod_new): created with 2 prices");
+  const created = stripe.calls.filter((c) => c.method === "POST");
+  assert.equal(created[0]?.body.get("metadata[tier]"), "solo");
+  assert.equal(created[0]?.body.get("metadata[catalog_version]"), "6");
+  assert.equal(created[1]?.body.get("product"), "prod_new");
+  assert.equal(created[1]?.body.get("recurring[interval]"), "month");
+  assert.equal(created[1]?.body.get("metadata[price_key]"), "monthly");
+  assert.deepEqual(report.ids.prices, { PRICE_SOLO_EUR: "price_1", PRICE_SOLO_EUR_ANNUAL: "price_2" });
+  assert.deepEqual(report.ids.products, { solo: "prod_new" });
+});
+
+test("catalog: matching prices pass and their IDs are reported", async () => {
+  const stripe = fakeStripe(
+    on("GET", "/v1/products", 200, list([product])),
+    prices(price("price_m", 3300, "month"), price("price_y", 31700, "year"), price("price_chf", 3000, "month", "chf")),
+  );
+  const report = await run(catalogConfig(), stripe);
+  assert.equal(results(report, "catalog")[0]?.message, "solo (prod_1), 2 prices");
+  assert.deepEqual(report.ids.prices, { PRICE_SOLO_EUR: "price_m", PRICE_SOLO_EUR_ANNUAL: "price_y" });
+  assert.equal(stripe.calls.find((c) => c.path === "/v1/products")?.query.get("active"), "true");
+});
+
+test("catalog: a changed amount is replaced only with replacePrices", async () => {
+  const stripe = fakeStripe(
+    on("GET", "/v1/products", 200, list([product])),
+    prices(price("price_old", 3000, "month"), price("price_y", 31700, "year")),
+    on("POST", "/v1/prices/price_old", 200, {}),
+    on("POST", "/v1/prices", 200, { id: "price_new" }),
+  );
+  const [checked] = results(await run(catalogConfig(), stripe), "catalog");
+  assert.equal(checked?.status, "fail");
+  assert.deepEqual(checked?.details, ["PRICE_SOLO_EUR: Stripe has EUR 30.00 per month (price_old), expected EUR 33.00 per month"]);
+  assert.match(checked!.fix!, /--replace-prices/);
+
+  const [held] = results(await run(catalogConfig(), stripe, "sk_test_x", { apply: true }), "catalog");
+  assert.equal(held?.status, "fail");
+  assert.equal(stripe.calls.filter((c) => c.method === "POST").length, 0);
+
+  const report = await run(catalogConfig(), stripe, "sk_test_x", { apply: true, replacePrices: true });
+  assert.equal(results(report, "catalog")[0]?.message, "solo (prod_1): created 1 price, archived 1");
+  const [archive, create] = stripe.calls.filter((c) => c.method === "POST");
+  assert.equal(archive?.path, "/v1/prices/price_old");
+  assert.equal(archive?.body.get("active"), "false");
+  assert.equal(create?.body.get("unit_amount"), "3300");
+  assert.equal(report.ids.prices.PRICE_SOLO_EUR, "price_new");
+});
+
+test("catalog: a price another spec uses is never archived", async () => {
+  const two: ProductSpec = { ...SOLO, prices: [SOLO.prices[0]!, { name: "PRICE_SOLO_EUR_PRO", currency: "eur", unitAmount: 5000, interval: "month" }] };
+  const stripe = fakeStripe(
+    on("GET", "/v1/products", 200, list([product])),
+    prices(price("price_m", 3300, "month")),
+    on("POST", "/v1/prices", 200, { id: "price_pro" }),
+  );
+  await run(catalogConfig([two]), stripe, "sk_test_x", { apply: true, replacePrices: true });
+  assert.deepEqual(stripe.calls.filter((c) => c.method === "POST").map((c) => c.path), ["/v1/prices"]);
+});
+
+test("catalog: product drift is fixed on apply; one-time prices have no interval", async () => {
+  const oneOff: ProductSpec = { ...SOLO, prices: [{ name: "SETUP", currency: "jpy", unitAmount: 500 }] };
+  const stripe = fakeStripe(
+    on("GET", "/v1/products", 200, list([{ ...product, description: "Old" }, { ...product, id: "prod_2" }])),
+    prices(price("price_setup", 500, null, "jpy")),
+    on("POST", "/v1/products/prod_1", 200, product),
+  );
+  const [checked] = results(await run(catalogConfig([oneOff]), stripe), "catalog");
+  assert.equal(checked?.status, "fail");
+  assert.deepEqual(checked?.details, [
+    "name, description or metadata differ",
+    "2 active products have tier=solo: prod_1, prod_2; using prod_1",
+  ]);
+  const [applied] = results(await run(catalogConfig([oneOff]), stripe, "sk_test_x", { apply: true }), "catalog");
+  assert.equal(applied?.status, "warn");
+  assert.equal(stripe.calls.find((c) => c.method === "POST")?.body.get("description"), "For one person");
+});
+
+test("catalog: validates the config", async () => {
+  const bad = (products: unknown) => run({ catalog: { products } } as Config, fakeStripe());
+  await assert.rejects(bad([{ key: "a", name: "A", prices: [{ name: "P", currency: "euro", unitAmount: 1 }] }]), /three-letter code/);
+  await assert.rejects(bad([{ key: "a", name: "A", prices: [{ name: "P", currency: "eur", unitAmount: 9.5 }] }]), /whole number/);
+  await assert.rejects(
+    bad([
+      { key: "a", name: "A", prices: [{ name: "P", currency: "eur", unitAmount: 1 }] },
+      { key: "b", name: "B", prices: [{ name: "P", currency: "eur", unitAmount: 2 }] },
+    ]),
+    /unique across the catalog/,
+  );
+});
+
+// Options
+
+test("only runs the named checks; strict counts warnings as failures", async () => {
+  const endpoint = { id: "we_1", url: URL_, status: "enabled", enabled_events: [...EVENTS, "charge.refunded"] };
+  const stripe = fakeStripe(on("GET", "/v1/webhook_endpoints", 200, list([endpoint])));
+  const config: Config = { webhooks: [{ url: URL_, events: EVENTS }] };
+  const report = await preflight(config, { key: "sk_test_x", fetch: stripe.fetch, only: ["webhooks"] });
+  assert.deepEqual(report.results.map((r) => `${r.area} ${r.status}`), ["webhook warn"]);
+  assert.equal(report.ok, true);
+  assert.deepEqual(stripe.calls.map((c) => c.path), ["/v1/webhook_endpoints"]);
+  assert.equal(report.ids.webhooks[URL_], "we_1");
+
+  const strict = await preflight(config, { key: "sk_test_x", fetch: stripe.fetch, only: ["webhooks"], strict: true });
+  assert.equal(strict.ok, false);
+  await assert.rejects(preflight(config, { key: "sk_test_x", only: ["webhook"] }), /Unknown check "webhook"/);
+});
+
+test("webhook: description and metadata are part of the config", async () => {
+  const endpoint = { id: "we_1", url: URL_, status: "enabled", enabled_events: EVENTS, description: "Old", metadata: {} };
+  const stripe = fakeStripe(
+    on("GET", "/v1/webhook_endpoints", 200, list([endpoint])),
+    on("POST", "/v1/webhook_endpoints/we_1", 200, endpoint),
+  );
+  const config: Config = { webhooks: [{ url: URL_, events: EVENTS, description: "Shop", metadata: { shop_webhook: "1" } }] };
+  const [checked] = results(await run(config, stripe), "webhook");
+  assert.equal(checked?.status, "warn");
+  assert.deepEqual(checked?.details, ["description or metadata differ"]);
+  const [applied] = results(await run(config, stripe, "sk_test_x", { apply: true }), "webhook");
+  assert.equal(applied?.status, "pass");
+  const post = stripe.calls.find((c) => c.method === "POST")!;
+  assert.equal(post.body.get("description"), "Shop");
+  assert.equal(post.body.get("metadata[shop_webhook]"), "1");
 });
