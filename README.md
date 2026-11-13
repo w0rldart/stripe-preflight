@@ -108,6 +108,8 @@ Then run `check` with the restricted key your app uses. That run tests the key's
 - The key is never printed. Reports show only its type, such as `rk_live`.
 - `apply` never deletes anything.
 - A new webhook's signing secret is printed once, because Stripe shows it only when the endpoint is created. Store it straight away.
+- That secret is part of the output, `--json` included. Don't run `apply` where the output ends up in logs, such as CI.
+- Each request times out after 30 seconds. Network errors, 429 and 5xx answers are retried twice, and a retried change carries the same idempotency key, so it can't happen twice.
 
 ## How permissions are checked
 
