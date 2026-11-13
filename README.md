@@ -2,7 +2,7 @@
 
 Checks that a Stripe account is ready for your app, and sets up the parts Stripe's API allows.
 
-Most Stripe setup happens by hand in the Dashboard, and small mistakes stay hidden until a real order goes wrong: a webhook missing one event, a restricted key without one permission, a payment method left off. stripe-preflight compares the account with a short config file and reports each gap with the fix.
+Most Stripe setup happens by hand in the Dashboard, and small mistakes stay hidden until a real order goes wrong: a webhook missing one event, a restricted key without one permission, a payment method left off, a price that still has last year's amount. stripe-preflight compares the account with a short config file and reports each gap with the fix.
 
 ```
 stripe-preflight 0.1.0: test mode, secret key
@@ -28,8 +28,9 @@ It needs Node 22.18 or later and has no dependencies.
 | Area | Check | `apply` |
 | --- | --- | --- |
 | account | Country, business name, support email and website. In live mode, that the account can take payments and receive payouts. | Reports only |
-| webhook | Each endpoint exists, is enabled, receives exactly your events and uses your API version. | Creates the endpoint, or fixes its events |
+| webhook | Each endpoint exists, is enabled, receives exactly your events and uses your API version. | Creates the endpoint, or fixes its events, description and metadata |
 | payment methods | Each listed method is on, and Stripe has activated it. | Turns them on |
+| catalog | Each product exists with its name, description and metadata, and has an active price for each amount. | Creates or updates products and prices |
 | permissions | Your app's restricted key has every permission it needs. | Reports only |
 | deliveries | Events Stripe failed to deliver in the last few days. | Reports only |
 | dashboard | Steps Stripe offers no API for, each with a link. | You confirm them |
@@ -38,7 +39,7 @@ It needs Node 22.18 or later and has no dependencies.
 
 ```sh
 npx stripe-preflight          # check: reports, changes nothing
-npx stripe-preflight apply    # also creates or fixes webhooks and payment methods
+npx stripe-preflight apply    # also creates or fixes webhooks, payment methods, products and prices
 ```
 
 The key comes from `STRIPE_SECRET_KEY`. To read it from a file instead:
@@ -56,6 +57,9 @@ The file is read directly, so a key exported in your shell cannot take its place
 | `--key-var <name>` | The variable that holds the key. Default `STRIPE_SECRET_KEY`. |
 | `--expect <mode>` | `test` or `live`. Stops if the key is of the other mode. |
 | `--confirm-live` | Required for `apply` with a live key. |
+| `--replace-prices` | With `apply`: archive a price whose amount changed and create the new one. |
+| `--only <checks>` | Run only these, comma-separated: `account`, `webhooks`, `paymentMethods`, `catalog`, `permissions`, `deliveries`, `dashboard`. |
+| `--strict` | Count warnings as failures. |
 | `--json` | Print the report as JSON. |
 
 Exit codes: `0` when every check passed, `1` when one failed, `2` when the run could not start.
@@ -74,6 +78,18 @@ export default {
     },
   ],
   paymentMethods: ["card", "bizum", "apple_pay", "google_pay"],
+  catalog: {
+    products: [
+      {
+        key: "pro",
+        name: "Example Pro",
+        prices: [
+          { name: "PRICE_PRO_MONTHLY", currency: "eur", unitAmount: 1900, interval: "month" },
+          { name: "PRICE_PRO_ANNUAL", currency: "eur", unitAmount: 19000, interval: "year" },
+        ],
+      },
+    ],
+  },
   permissions: {
     checkout_sessions: "write",
     refunds: "write",
@@ -87,12 +103,18 @@ Every field is optional.
 
 - `webhooks[].url` takes one URL, or `{ test, live }` when the modes use different ones.
 - `webhooks[].apiVersion` should match the version your Stripe library pins. Stripe sets it when the endpoint is created and cannot change it later, so `apply` never touches it. If it is wrong, delete the endpoint in the Dashboard and run `apply` again.
+- `webhooks[].description` and `webhooks[].metadata` are optional. When set, a difference is a warning and `apply` updates it. A new endpoint also gets `stripe_preflight: "1"` in its metadata.
 - `paymentMethods` uses Stripe's API names, such as `card`, `bizum`, `apple_pay`, `google_pay`, `twint`, `ideal`.
+- `catalog.products[].key` finds the product through a metadata field, `preflight_key` unless you set `catalog.keyField`. A price matches when currency, amount and interval match. Amounts are in the smallest unit, so `1900` is 19.00 EUR. Leave out `interval` for a one-time price. `name` is yours, such as the variable that will hold the price's ID; the report lists every ID under that name.
 - `permissions` takes `read` or `write` for: `charges`, `checkout_sessions`, `coupons`, `customers`, `events`, `invoices`, `payment_intents`, `payment_method_configurations`, `prices`, `products`, `promotion_codes`, `refunds`, `subscriptions`, `webhook_endpoints`.
 - `deliveries` is on by default over 3 days. Set `{ days: 7 }`, or `false` to turn it off.
 - `dashboard` takes `receipts`, `refunds`, `publicDetails`, `branding`, `team`, `restrictedKey`, or your own `{ label, url }`.
 
 For types in your editor, install the package and wrap the object in `defineConfig` from `stripe-preflight`.
+
+## Prices
+
+A Stripe price cannot change its amount. When the config has a new amount, `check` shows the old price and the expected one. `apply` leaves it alone unless you add `--replace-prices`: then it archives the old price and creates the new one. Subscriptions already on the old price keep it. A price that another entry in the config uses is never archived.
 
 ## Two keys
 
@@ -126,11 +148,13 @@ const report = await preflight(config, { key: process.env.STRIPE_SECRET_KEY! });
 console.log(formatText(report));
 ```
 
-`report.ok` is false when any check failed. `report.results` holds one entry per check with `area`, `status`, `message`, and optional `details` and `fix`.
+`report.ok` is false when any check failed. `report.results` holds one entry per check with `area`, `status`, `message`, and optional `details` and `fix`. `report.ids` has the IDs found or created: `products` by key, `prices` by name, `webhooks` by URL.
+
+The options match the CLI flags: `apply`, `confirmLive`, `expect`, `replacePrices`, `only` and `strict`.
 
 ## What it does not do
 
-It does not manage products and prices. Customer emails, branding, team access and creating API keys have no Stripe API, so it lists them for you to confirm.
+Customer emails, branding, team access and creating API keys have no Stripe API, so it lists them for you to confirm.
 
 ## Tests
 
