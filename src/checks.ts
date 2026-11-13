@@ -14,13 +14,23 @@ export type Result = {
 
 export type Secret = { label: string; value: string };
 
+/** IDs of what the run found or created: products by key, prices by name, webhooks by URL. */
+export type Ids = {
+  products: Record<string, string>;
+  prices: Record<string, string>;
+  webhooks: Record<string, string>;
+};
+
 export type Context = {
   client: Client;
   key: KeyInfo;
   apply: boolean;
+  /** With apply: archive a price whose amount changed and create the new one. */
+  replacePrices: boolean;
   now: () => number;
   /** Values Stripe shows once, such as a new webhook signing secret. */
   secrets: Secret[];
+  ids: Ids;
 };
 
 export type Check = (config: Config, ctx: Context) => Promise<Result[]>;
@@ -94,21 +104,31 @@ async function webhook(spec: WebhookSpec, url: string, found: any[], ctx: Contex
       enabled_events: spec.events,
       api_version: spec.apiVersion,
       description: spec.description,
-      metadata: TAG,
+      metadata: { ...TAG, ...spec.metadata },
     });
+    ctx.ids.webhooks[url] = created.id;
     ctx.secrets.push({ label: `Signing secret for ${url}`, value: created.secret });
     return { area, status: "pass", message: `${url}: created ${created.id}` };
   }
+  ctx.ids.webhooks[url] = endpoint.id;
 
   const events: string[] = endpoint.enabled_events ?? [];
   const missing = events.includes("*") ? [] : spec.events.filter((e) => !events.includes(e));
   const extra = events.filter((e) => !spec.events.includes(e));
   const disabled = endpoint.status !== "enabled";
+  const labels =
+    (spec.description !== undefined && endpoint.description !== spec.description) ||
+    Object.entries(spec.metadata ?? {}).some(([k, v]) => endpoint.metadata?.[k] !== v);
   const head = `${url}: ${endpoint.id}`;
 
   let updated = false;
-  if (ctx.apply && (missing.length || extra.length || disabled)) {
-    await ctx.client.post(`/v1/webhook_endpoints/${endpoint.id}`, { enabled_events: spec.events, disabled: false });
+  if (ctx.apply && (missing.length || extra.length || disabled || labels)) {
+    await ctx.client.post(`/v1/webhook_endpoints/${endpoint.id}`, {
+      enabled_events: spec.events,
+      disabled: false,
+      description: spec.description,
+      metadata: spec.metadata,
+    });
     updated = true;
   }
   const problems = strings([
@@ -120,14 +140,16 @@ async function webhook(spec: WebhookSpec, url: string, found: any[], ctx: Contex
   ]);
   const notes = strings([
     !updated && extra.length > 0 && `also sends ${extra.join(", ")}`,
+    !updated && labels && "description or metadata differ",
     enabled.length > 1 && `${enabled.length} enabled endpoints at this URL: ${enabled.map((e) => e.id).join(", ")}`,
   ]);
-  const done = updated ? ", events updated" : "";
+  const done = updated ? ", updated" : "";
 
   if (problems.length) {
     const versionWrong = problems.some((p) => p.startsWith("sends events"));
     const fix = strings([
-      !updated && (disabled || missing.length > 0) && "Run apply to fix the event list.",
+      !updated && disabled && missing.length === 0 && "Run apply to enable it.",
+      !updated && missing.length > 0 && `Run apply to ${disabled ? "enable it and " : ""}add the missing events.`,
       versionWrong &&
         "Stripe sets the API version only when an endpoint is created: delete this one in the Dashboard, run apply to create it again, then store the new signing secret.",
     ]).join(" ");
@@ -135,7 +157,7 @@ async function webhook(spec: WebhookSpec, url: string, found: any[], ctx: Contex
   }
   if (notes.length) {
     const fix = strings([
-      extra.length > 0 && !updated && "Run apply to send only the listed events.",
+      (extra.length > 0 || labels) && !updated && "Run apply to match the config.",
       enabled.length > 1 && "Delete the endpoints the app does not use; each one gets every event.",
     ]).join(" ");
     return { area, status: "warn", message: `${head}${done}`, details: notes, fix };

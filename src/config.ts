@@ -7,6 +7,28 @@ export type WebhookSpec = {
   /** The API version your Stripe library pins. Stripe fixes it when the endpoint is created. */
   apiVersion?: string;
   description?: string;
+  metadata?: Record<string, string>;
+};
+
+export type PriceSpec = {
+  /** Your name for the price, such as the variable that will hold its ID. Unique across the catalog. */
+  name: string;
+  /** Three-letter ISO code, such as "eur". */
+  currency: string;
+  /** In the currency's smallest unit: 3900 for 39.00 EUR. */
+  unitAmount: number;
+  /** Leave out for a one-time price. */
+  interval?: "day" | "week" | "month" | "year";
+  metadata?: Record<string, string>;
+};
+
+export type ProductSpec = {
+  /** Finds the product in Stripe, through the metadata field named by catalog.keyField. */
+  key: string;
+  name: string;
+  description?: string;
+  metadata?: Record<string, string>;
+  prices: PriceSpec[];
 };
 
 /** Steps only the Dashboard can do. The CLI lists them with a link; it cannot check them. */
@@ -52,6 +74,12 @@ export type Config = {
   webhooks?: WebhookSpec[];
   /** Payment methods that must be on, by API name: card, bizum, apple_pay, google_pay... */
   paymentMethods?: string[];
+  /** Products and prices that must exist, active, with these amounts. */
+  catalog?: {
+    /** The product metadata field that holds each product's key. Default "preflight_key". */
+    keyField?: string;
+    products: ProductSpec[];
+  };
   /** What the app's restricted key needs, for example { refunds: "write", products: "read" }. */
   permissions?: Record<string, Access>;
   /** Report events Stripe failed to deliver. On by default, over the last 3 days. */
@@ -73,7 +101,7 @@ export function validate(input: unknown): Config {
   };
   if (!input || typeof input !== "object") fail("export an object");
   const config = input as Record<string, any>;
-  const known = ["account", "webhooks", "paymentMethods", "permissions", "deliveries", "dashboard"];
+  const known = ["account", "webhooks", "paymentMethods", "catalog", "permissions", "deliveries", "dashboard"];
   for (const field of Object.keys(config)) if (!known.includes(field)) fail(`unknown field "${field}"`);
 
   for (const [i, hook] of (config.webhooks ?? []).entries()) {
@@ -85,6 +113,32 @@ export function validate(input: unknown): Config {
   }
   if (config.paymentMethods && !(Array.isArray(config.paymentMethods) && config.paymentMethods.every(isText))) {
     fail("paymentMethods takes a list of names");
+  }
+  if (config.catalog !== undefined) {
+    const { keyField, products } = config.catalog ?? {};
+    if (keyField !== undefined && !isText(keyField)) fail("catalog.keyField takes a metadata field name");
+    if (!Array.isArray(products)) fail("catalog.products takes a list of products");
+    const keys = new Set<string>();
+    const names = new Set<string>();
+    for (const [i, product] of products.entries()) {
+      const at = `catalog.products[${i}]`;
+      if (!isText(product?.key) || keys.has(product.key)) fail(`${at}.key needs a unique key`);
+      keys.add(product.key);
+      if (!isText(product.name)) fail(`${at}.name is required`);
+      if (!Array.isArray(product.prices) || !product.prices.length) fail(`${at}.prices needs at least one price`);
+      for (const [j, price] of product.prices.entries()) {
+        const where = `${at}.prices[${j}]`;
+        if (!isText(price?.name) || names.has(price.name)) fail(`${where}.name needs a name unique across the catalog`);
+        names.add(price.name);
+        if (!/^[a-z]{3}$/i.test(price.currency ?? "")) fail(`${where}.currency takes a three-letter code`);
+        if (!(Number.isInteger(price.unitAmount) && price.unitAmount >= 0)) {
+          fail(`${where}.unitAmount takes a whole number in the smallest unit, such as 3900`);
+        }
+        if (price.interval !== undefined && !["day", "week", "month", "year"].includes(price.interval)) {
+          fail(`${where}.interval takes day, week, month or year`);
+        }
+      }
+    }
   }
   for (const [resource, access] of Object.entries(config.permissions ?? {})) {
     if (!RESOURCES[resource]) fail(`permissions: unknown resource "${resource}". Known: ${Object.keys(RESOURCES).join(", ")}`);

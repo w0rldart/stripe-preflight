@@ -10,7 +10,7 @@ Checks that a Stripe account is ready for your app, and sets up what the API all
 
 Usage
   stripe-preflight [check]   report only, changes nothing
-  stripe-preflight apply     also create or fix the webhook endpoints and payment methods
+  stripe-preflight apply     also create or fix webhook endpoints, payment methods, products and prices
 
 Options
   --config <file>     config file (default: stripe-preflight.config.ts, .mts, .mjs, .js or .json)
@@ -18,6 +18,10 @@ Options
   --key-var <name>    variable that holds the key (default: STRIPE_SECRET_KEY)
   --expect <mode>     test or live: stop if the key is of the other mode
   --confirm-live      allow apply with a live key
+  --replace-prices    with apply: archive a price whose amount changed and create the new one
+  --only <checks>     run only these, comma-separated: account, webhooks, paymentMethods,
+                      catalog, permissions, deliveries, dashboard
+  --strict            count warnings as failures
   --json              print the report as JSON
   -h, --help          show this help
   -v, --version       show the version
@@ -78,6 +82,9 @@ async function run(args: string[], io: Io): Promise<number> {
       "key-var": { type: "string", default: "STRIPE_SECRET_KEY" },
       expect: { type: "string" },
       "confirm-live": { type: "boolean", default: false },
+      "replace-prices": { type: "boolean", default: false },
+      only: { type: "string" },
+      strict: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
@@ -102,6 +109,9 @@ async function run(args: string[], io: Io): Promise<number> {
     apply: command === "apply",
     confirmLive: values["confirm-live"],
     expect: values.expect as Mode | undefined,
+    replacePrices: values["replace-prices"],
+    only: values.only?.split(",").map((name) => name.trim()).filter(Boolean),
+    strict: values.strict,
     fetch: io.fetch,
   });
   out(values.json ? JSON.stringify(report, null, 2) : formatText(report));

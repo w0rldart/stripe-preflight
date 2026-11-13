@@ -17,6 +17,11 @@ export function formatText(report: Report): string {
     for (const detail of r.details ?? []) lines.push(indent + detail);
     if (r.fix) lines.push(indent + r.fix);
   }
+  const prices = Object.entries(report.ids.prices);
+  if (prices.length) {
+    lines.push("", "Price IDs:");
+    for (const [name, id] of prices) lines.push(`  ${name}=${id}`);
+  }
   if (report.secrets.length) {
     lines.push("", "Shown once. Store it now:");
     for (const s of report.secrets) lines.push(`  ${s.label}: ${s.value}`);
