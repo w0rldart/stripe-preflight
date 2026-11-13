@@ -1,0 +1,47 @@
+{
+  "name": "stripe-preflight",
+  "version": "0.1.0",
+  "description": "Check that a Stripe account is ready for your app, and set up what the API allows: webhooks, payment methods, restricted-key permissions.",
+  "keywords": [
+    "stripe",
+    "cli",
+    "webhook",
+    "restricted-key",
+    "payments",
+    "checklist"
+  ],
+  "homepage": "https://github.com/w0rldart/stripe-preflight#readme",
+  "bugs": "https://github.com/w0rldart/stripe-preflight/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w0rldart/stripe-preflight.git"
+  },
+  "license": "MIT",
+  "author": "Alexandru Budurovici",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "stripe-preflight": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
