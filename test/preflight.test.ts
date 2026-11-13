@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { preflight, type Config, type Report } from "../src/index.ts";
+import { formatText, preflight, type Config, type Report } from "../src/index.ts";
 import { encode } from "../src/stripe.ts";
 
 type Request = { method: string; path: string; query: URLSearchParams; body: URLSearchParams };
@@ -259,4 +259,34 @@ test("pages through long lists", async () => {
   const [r] = results(await run({ webhooks: [{ url: URL_, events: EVENTS }] }, stripe), "webhook");
   assert.equal(r?.status, "pass");
   assert.equal(stripe.calls.filter((c) => c.path === "/v1/webhook_endpoints")[1]?.query.get("starting_after"), "we_1");
+});
+
+test("formats the report for a terminal", () => {
+  const report: Report = {
+    version: "0.1.0",
+    key: { type: "rk_live", mode: "live", restricted: true },
+    applied: false,
+    secrets: [],
+    ok: false,
+    results: [
+      { area: "deliveries", status: "pass", message: "no failed deliveries in the last 3 days" },
+      { area: "permissions", status: "fail", message: "missing 1 of 2", details: ["refunds write"], fix: "Edit the key." },
+      { area: "dashboard", status: "todo", message: "Customer emails: turn on Refunds", details: ["https://x.example"] },
+    ],
+  };
+  assert.equal(
+    formatText(report),
+    [
+      "stripe-preflight 0.1.0: live mode, restricted key",
+      "",
+      "PASS  deliveries   no failed deliveries in the last 3 days",
+      "FAIL  permissions  missing 1 of 2",
+      "                   refunds write",
+      "                   Edit the key.",
+      "TODO  dashboard    Customer emails: turn on Refunds",
+      "                   https://x.example",
+      "",
+      "1 failed, 1 to confirm in the Dashboard.",
+    ].join("\n"),
+  );
 });
