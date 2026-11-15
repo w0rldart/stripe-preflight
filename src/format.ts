@@ -7,7 +7,7 @@ const LABEL: Record<Status, string> = { pass: "PASS", fail: "FAIL", warn: "WARN"
 export function formatText(report: Report): string {
   const { key } = report;
   const lines = [
-    `stripe-preflight ${report.version}: ${key.mode} mode, ${key.restricted ? "restricted" : "secret"} key${report.applied ? ", applying" : ""}`,
+    `stripe-preflight ${report.version}: ${report.sandbox ? "sandbox" : `${key.mode} mode`}, ${key.restricted ? "restricted" : "secret"} key${report.applied ? ", applying" : ""}`,
     "",
   ];
   const width = Math.max(8, ...report.results.map((r) => r.area.length)) + 2;
@@ -15,7 +15,7 @@ export function formatText(report: Report): string {
   for (const r of report.results) {
     lines.push(`${LABEL[r.status]}  ${r.area.padEnd(width)}${r.message}`);
     for (const detail of r.details ?? []) lines.push(indent + detail);
-    if (r.fix) lines.push(indent + r.fix);
+    for (const line of r.fix?.split("\n") ?? []) lines.push(indent + line);
   }
   const prices = Object.entries(report.ids.prices);
   if (prices.length) {

@@ -62,6 +62,7 @@ test("exits 2 with a plain message when it cannot start", async () => {
   assert.match((await run(["--config", "missing.ts"])).err, /Config not found/);
   assert.match((await run(["deploy"])).err, /Unknown command "deploy"/);
   assert.match((await run(["--expect", "prod"])).err, /--expect takes test or live/);
+  assert.match((await run(["--sandbox"], { env: { STRIPE_SECRET_KEY: "sk_live_x" } })).err, /A sandbox has test keys only/);
 
   const noKey = await run([]);
   assert.equal(noKey.code, 2);

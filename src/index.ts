@@ -41,6 +41,8 @@ export type Options = {
   confirmLive?: boolean;
   /** Stop unless the key is of this mode. */
   expect?: Mode;
+  /** The key is from a Stripe sandbox: its public details are its own, so the account check compares only the country. */
+  sandbox?: boolean;
   /** With apply: archive a price whose amount changed and create the new one. */
   replacePrices?: boolean;
   /** Run only these checks, by config field name, such as ["catalog"]. */
@@ -54,6 +56,7 @@ export type Options = {
 export type Report = {
   version: string;
   key: KeyInfo;
+  sandbox: boolean;
   applied: boolean;
   results: Result[];
   secrets: Secret[];
@@ -83,6 +86,9 @@ export async function preflight(config: Config, options: Options): Promise<Repor
   if (options.expect && options.expect !== key.mode) {
     throw new Error(`Expected a ${options.expect} key, but this is a ${key.type} key.`);
   }
+  if (options.sandbox && key.mode === "live") {
+    throw new Error(`A sandbox has test keys only, but this is a ${key.type} key.`);
+  }
   if (options.apply && key.mode === "live" && !options.confirmLive) {
     throw new Error("Refusing to change a live account without --confirm-live.");
   }
@@ -90,6 +96,7 @@ export async function preflight(config: Config, options: Options): Promise<Repor
     client: createClient(options.key.trim(), { fetch: options.fetch }),
     key,
     apply: Boolean(options.apply),
+    sandbox: Boolean(options.sandbox),
     replacePrices: Boolean(options.replacePrices),
     now: options.now ?? Date.now,
     secrets: [],
@@ -116,6 +123,7 @@ export async function preflight(config: Config, options: Options): Promise<Repor
   return {
     version,
     key,
+    sandbox: ctx.sandbox,
     applied: ctx.apply,
     results,
     secrets: ctx.secrets,

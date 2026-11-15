@@ -17,6 +17,8 @@ Options
   --env-file <file>   read the key from this file instead of the environment
   --key-var <name>    variable that holds the key (default: STRIPE_SECRET_KEY)
   --expect <mode>     test or live: stop if the key is of the other mode
+  --sandbox           the key is from a Stripe sandbox, which keeps its own public details:
+                      the account check compares only the country
   --confirm-live      allow apply with a live key
   --replace-prices    with apply: archive a price whose amount changed and create the new one
   --only <checks>     run only these, comma-separated: account, webhooks, paymentMethods,
@@ -81,6 +83,7 @@ async function run(args: string[], io: Io): Promise<number> {
       "env-file": { type: "string" },
       "key-var": { type: "string", default: "STRIPE_SECRET_KEY" },
       expect: { type: "string" },
+      sandbox: { type: "boolean", default: false },
       "confirm-live": { type: "boolean", default: false },
       "replace-prices": { type: "boolean", default: false },
       only: { type: "string" },
@@ -109,6 +112,7 @@ async function run(args: string[], io: Io): Promise<number> {
     apply: command === "apply",
     confirmLive: values["confirm-live"],
     expect: values.expect as Mode | undefined,
+    sandbox: values.sandbox,
     replacePrices: values["replace-prices"],
     only: values.only?.split(",").map((name) => name.trim()).filter(Boolean),
     strict: values.strict,

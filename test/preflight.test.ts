@@ -103,6 +103,32 @@ test("account: wrong public details fail; an unactivated account only warns in t
   assert.equal(live?.status, "fail");
 });
 
+test("account: a sandbox keeps its own public details, so only its country is compared", async () => {
+  const acct = {
+    id: "acct_sb",
+    country: "ES",
+    details_submitted: false,
+    charges_enabled: false,
+    payouts_enabled: false,
+    business_profile: { name: "Shop sandbox" },
+  };
+  const stripe = fakeStripe(on("GET", "/v1/account", 200, acct));
+  const config = { account: { country: "ES", businessName: "Shop", supportEmail: "hola@shop.example" } };
+  const [plain] = results(await run(config, stripe), "account");
+  assert.equal(plain?.status, "fail");
+  assert.match(plain!.fix!, /If this key is from a sandbox, add --sandbox/);
+
+  const report = await run(config, stripe, "sk_test_x", { sandbox: true });
+  const [sandbox] = results(report, "account");
+  assert.equal(sandbox?.status, "pass");
+  assert.equal(sandbox?.message, "Shop sandbox, ES, a sandbox: public details are checked with the live key");
+  assert.match(formatText(report).split("\n")[0]!, /: sandbox, secret key$/);
+
+  const [elsewhere] = results(await run({ account: { country: "CH" } }, stripe, "sk_test_x", { sandbox: true }), "account");
+  assert.equal(elsewhere?.status, "fail");
+  await assert.rejects(run(config, stripe, "sk_live_x", { sandbox: true }), /A sandbox has test keys only, but this is a sk_live key/);
+});
+
 test("webhook: a missing endpoint fails on check and is created on apply", async () => {
   const created = { id: "we_new", secret: "whsec_new" };
   const stripe = fakeStripe(
@@ -286,6 +312,7 @@ test("formats the report for a terminal", () => {
   const report: Report = {
     version: "0.1.0",
     key: { type: "rk_live", mode: "live", restricted: true },
+    sandbox: false,
     applied: false,
     secrets: [],
     ids: { products: {}, prices: { STRIPE_PRICE_SOLO: "price_1" }, webhooks: {} },

@@ -25,6 +25,8 @@ export type Context = {
   client: Client;
   key: KeyInfo;
   apply: boolean;
+  /** The key is from a Stripe sandbox, which keeps its own public details. */
+  sandbox: boolean;
   /** With apply: archive a price whose amount changed and create the new one. */
   replacePrices: boolean;
   now: () => number;
@@ -53,15 +55,18 @@ export const account: Check = async (config, ctx) => {
     url: a.business_profile?.url,
   };
   const names = { country: "country", businessName: "business name", supportEmail: "support email", url: "website" };
-  const wrong = Object.entries(config.account ?? {}).flatMap(([field, want]) => {
+  // A sandbox keeps its own public details, and Stripe names it after the account with "sandbox" added.
+  // Only its country says something about the live account, and it is never activated.
+  const expected = ctx.sandbox ? { country: config.account?.country } : (config.account ?? {});
+  const wrong = Object.entries(expected).flatMap(([field, want]) => {
     const got = have[field as keyof typeof have];
     if (!want || want === got) return [];
     return [`${names[field as keyof typeof names]} is ${got ? `"${got}"` : "not set"}, expected "${want}"`];
   });
   const notReady = strings([
-    !a.details_submitted && "details not submitted",
-    !a.charges_enabled && "charges not enabled",
-    !a.payouts_enabled && "payouts not enabled",
+    !ctx.sandbox && !a.details_submitted && "details not submitted",
+    !ctx.sandbox && !a.charges_enabled && "charges not enabled",
+    !ctx.sandbox && !a.payouts_enabled && "payouts not enabled",
   ]);
   const name = have.businessName ?? a.id;
   const live = ctx.key.mode === "live";
@@ -71,9 +76,12 @@ export const account: Check = async (config, ctx) => {
         area: "account",
         status: "fail",
         message: [...wrong, ...(live ? notReady : [])].join("; "),
-        fix: `Settings: ${link("settings/public", ctx)}`,
+        fix: `Settings: ${link("settings/public", ctx)}${/sandbox$/i.test(have.businessName ?? "") ? "\nIf this key is from a sandbox, add --sandbox." : ""}`,
       },
     ];
+  }
+  if (ctx.sandbox) {
+    return [{ area: "account", status: "pass", message: `${name}, ${have.country}, a sandbox: public details are checked with the live key` }];
   }
   if (notReady.length) {
     return [{ area: "account", status: "warn", message: `${name}, not ready for live payments: ${notReady.join(", ")}` }];

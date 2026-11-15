@@ -27,7 +27,7 @@ It needs Node 22.18 or later and has no dependencies.
 
 | Area | Check | `apply` |
 | --- | --- | --- |
-| account | Country, business name, support email and website. In live mode, that the account can take payments and receive payouts. | Reports only |
+| account | Country, business name, support email and website. In live mode, that the account can take payments and receive payouts. With `--sandbox`, only the country. | Reports only |
 | webhook | Each endpoint exists, is enabled, receives exactly your events and uses your API version. | Creates the endpoint, or fixes its events, description and metadata |
 | payment methods | Each listed method is on, and Stripe has activated it. | Turns them on |
 | catalog | Each product exists with its name, description and metadata, and has an active price for each amount. | Creates or updates products and prices |
@@ -56,6 +56,7 @@ The file is read directly, so a key exported in your shell cannot take its place
 | `--env-file <file>` | Read the key from this file. |
 | `--key-var <name>` | The variable that holds the key. Default `STRIPE_SECRET_KEY`. |
 | `--expect <mode>` | `test` or `live`. Stops if the key is of the other mode. |
+| `--sandbox` | The key is from a Stripe sandbox. A sandbox keeps its own public details, under a name like "Example Shop sandbox", so the account check compares only the country. |
 | `--confirm-live` | Required for `apply` with a live key. |
 | `--replace-prices` | With `apply`: archive a price whose amount changed and create the new one. |
 | `--only <checks>` | Run only these, comma-separated: `account`, `webhooks`, `paymentMethods`, `catalog`, `permissions`, `deliveries`, `dashboard`. |
